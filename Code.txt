@@ -1,0 +1,223 @@
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/videoio/videoio.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <iostream>
+#include <windows.h>
+#include <string>
+
+using namespace std;
+using namespace cv;
+
+Mat Frame, LAB, AccuracyImg, AcceptOrRejectImg, WaitForSecondsImg;
+Point2i FirstCorner, SecondCorner;
+bool FirstClick = false, SecondClick = false, ColorSelected = false;
+int CameraWidth, CameraHeight;
+VideoCapture video;
+Rect Roi;
+string CameraWindow = "Camera";
+int LRef = 0, ARef = 0, BRef = 0;
+
+double Distance(Point2i firstPoint, Point2i secondPoint) { // Calculate Ecqludian Distance
+	return sqrt(pow(firstPoint.x - secondPoint.x, 2) + pow(firstPoint.y - secondPoint.y, 2));
+}
+Mat CreatMask() {
+	Mat output = Mat::zeros(LAB.rows, LAB.cols, CV_8UC1);
+
+	int nl = LAB.rows; //Number of Lines
+	int nc = LAB.cols; //Total Number of Pixles In a Row
+
+
+	for (int j = 0; j < nl; j++) {
+		Vec3b* data = LAB.ptr<Vec3b>(j);
+		uchar* outputData = output.ptr<uchar>(j);
+
+		for (int i = 0; i < nc; i++) {
+
+			if ((sqrt(pow(data[i][0] - LRef, 2)) < 60) && (sqrt(pow(data[i][1] - ARef, 2)) < 10) &&
+				(sqrt(pow(data[i][2] - BRef, 2)) < 12))
+				outputData[i] = 255;
+		}
+	}
+	return output;
+}
+int ColorAccuracy(Rect zeroRect) {
+	Mat mask = CreatMask();
+
+	mask(zeroRect) = 0;
+
+	imshow("FirstMask", mask);
+
+	return ((1 - sum(mask)[0] / (mask.rows * mask.cols * 255)) * 100);
+}
+void OnMouse(int event, int x, int y, int flags, void* userdata) {
+	if (event == EVENT_LBUTTONDOWN && !FirstClick) {//left Mouse Button Down 
+		FirstCorner = Point(x, y);
+		FirstClick = true;
+		SecondClick = false;
+	}
+
+	if (event == EVENT_MOUSEMOVE && FirstClick && !SecondClick) {//Mouse moving
+
+		if (((x > 0) && (x < CameraWidth)) && ((y > 0) && (y < CameraHeight))) {
+
+			rectangle(Frame, FirstCorner, Point(x, y), Scalar(0, 255, 255), 2);
+			imshow(CameraWindow, Frame);
+		}
+
+		else
+		{
+			FirstClick = false;
+			SecondClick = true;
+		}
+	}
+
+	if (event == EVENT_LBUTTONUP && !SecondClick) {//left Mouse Button Up 
+
+		SecondClick = true;
+		SecondCorner = Point(x, y);
+
+		if (Distance(FirstCorner, SecondCorner) < 30) {
+			SecondClick = false;
+			FirstClick = false;
+			return;
+		}
+		Roi = Rect(FirstCorner, SecondCorner);
+
+		rectangle(Frame, FirstCorner, SecondCorner, Scalar(0, 255, 255), 3);
+
+		//Ask From User about Correct or incorrect roi 
+		Mat AcceptOrRejectRoi = Frame(Rect(1, CameraHeight - AcceptOrRejectImg.rows - 1, AcceptOrRejectImg.cols, AcceptOrRejectImg.rows));
+		addWeighted(AcceptOrRejectRoi, 0, AcceptOrRejectImg, 1, 0, AcceptOrRejectRoi);
+		imshow(CameraWindow, Frame);
+
+		int check = waitKey(10);
+
+		while (true)
+		{
+			if (check == 'y') {
+
+				Mat roiLAB;
+				roiLAB = LAB(Roi);
+
+				int nl = roiLAB.rows; //Number of Lines
+				int nc = roiLAB.cols; //Total Number of Pixles In a Row
+				LRef = ARef = BRef = 0;
+
+				for (int j = 0; j < nl; j++) {
+					Vec3b* data = roiLAB.ptr<Vec3b>(j);
+
+					for (int i = 0; i < nc; i++) {
+						LRef += data[i][0];
+						ARef += data[i][1];
+						BRef += data[i][2];
+					}
+				}
+				LRef /= (roiLAB.rows * roiLAB.cols);
+				ARef /= (roiLAB.rows * roiLAB.cols);
+				BRef /= (roiLAB.rows * roiLAB.cols);
+				ColorSelected = true;
+				cout << "LRef : " << LRef << " ARef: " << ARef << " BRef: " << BRef << endl;
+
+
+				Mat AccuracyRoi = Frame(Rect(CameraWidth - AccuracyImg.cols - 1, CameraHeight - AccuracyImg.rows - 1, AccuracyImg.cols, AccuracyImg.rows));
+				addWeighted(AccuracyRoi, 0, AccuracyImg, 1, 0, AccuracyRoi);
+				putText(AccuracyRoi, to_string(ColorAccuracy(Roi)), Point(1, AccuracyImg.rows * 3 / 4), FONT_HERSHEY_COMPLEX_SMALL, 2, Scalar(0, 0, 0), 2);
+
+				Mat WaitForSecondsRoi = Frame(Rect(CameraWidth - WaitForSecondsImg.cols - 1,
+					1, WaitForSecondsImg.cols, WaitForSecondsImg.rows));
+				addWeighted(WaitForSecondsRoi, 0, WaitForSecondsImg, 1, 0, WaitForSecondsRoi);
+				imshow(CameraWindow, Frame);
+
+				waitKey(2000);
+				break;
+			}
+
+			else if (check == 'n') {
+
+				break;
+			}
+
+			else
+			{
+				check = waitKey(10);
+			}
+
+		}
+		SecondClick = false;
+		FirstClick = false;
+	}
+
+}
+
+
+int main(void) {
+
+	video.open(0);
+	if (!video.isOpened())
+		return 0;
+
+	//Accuracy Image
+	char filenameAcc[] = "Accuracy.png";
+	char fullFilenameAcc[MAX_PATH];
+	GetFullPathName(filenameAcc, MAX_PATH, fullFilenameAcc, nullptr);
+	AccuracyImg = imread(fullFilenameAcc, 1);
+
+	//Accept or Reject Image
+	char filenameAR[] = "Accept Or Reject.png";
+	char fullFilenameAR[MAX_PATH];
+	GetFullPathName(filenameAR, MAX_PATH, fullFilenameAR, nullptr);
+	AcceptOrRejectImg = imread(fullFilenameAR, 1);
+
+	//Wait For Seconds Image
+	char filenameWS[] = "WaitForSeconds.png";
+	char fullFilenameWS[MAX_PATH];
+	GetFullPathName(filenameWS, MAX_PATH, fullFilenameWS, nullptr);
+	WaitForSecondsImg = imread(fullFilenameWS, 1);
+
+	//Camera Prop
+	CameraWidth = video.get(CAP_PROP_FRAME_WIDTH);
+	CameraHeight = video.get(CAP_PROP_FRAME_HEIGHT);
+
+	namedWindow(CameraWindow, WINDOW_NORMAL);
+	setMouseCallback(CameraWindow, OnMouse, NULL);
+	while (true)
+	{
+
+		video >> Frame;
+
+		if (Frame.empty())
+			return 0;
+
+		imshow(CameraWindow, Frame);
+		blur(Frame, Frame, Size(5, 5));
+		cvtColor(Frame, LAB, COLOR_BGR2Lab);
+
+		if (ColorSelected) {
+			Mat LABMask;
+			LABMask = CreatMask();
+			erode(LABMask, LABMask, Mat(), Point(-1, -1), 1, 1);
+			imshow("mask", LABMask);
+
+			vector <vector<Point>> contours;
+			findContours(LABMask, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+
+			if (!contours.empty()) {
+				vector<double> OurContourArea;
+				for (int i = 0; i < contours.size(); i++)
+					OurContourArea.insert(OurContourArea.begin() + i, contourArea(contours[i]));
+
+				int maxArea = max_element(OurContourArea.begin(), OurContourArea.end()) - OurContourArea.begin();
+				Moments mom = moments(Mat(contours[maxArea]));
+				cout << "X: " << mom.m10 / mom.m00 << " Y: " << mom.m01 / mom.m00 << endl;
+			}
+		}
+
+		if (waitKey(10) == 13)
+			break;
+	}
+
+	video.release();
+	destroyAllWindows();
+	return 0;
+}
